@@ -7,12 +7,16 @@ LOG_FILE = 'security_events.log'
 
 def _mask_sensitive_data(message):
     """Función interna para enmascarar datos sensibles en un mensaje de log."""
-    # Enmascarar cédulas (formato: 'cedula': '1234567890')
-    message = re.sub(r"('cedula':\s*')\d{6}(\d{4})'", r"\1******\2'", message, flags=re.IGNORECASE)
-    # Enmascarar contraseñas
-    message = re.sub(r"('password':\s*)'.*?'", r"\1'********'", message, flags=re.IGNORECASE)
-    # Enmascarar números de celular
-    message = re.sub(r"('celular':\s*')\d{6}(\d{4})'", r"\1******\2'", message, flags=re.IGNORECASE)
+    # Enmascarar cédulas - patrones con comillas simples y dobles
+    message = re.sub(r"(['\"]cedula['\"]\s*:\s*['\"])\d{6}(\d{4})(['\"])", r"\1******\2\3", message, flags=re.IGNORECASE)
+    # Enmascarar contraseñas - patrones con comillas simples y dobles
+    message = re.sub(r"(['\"]password['\"]\s*:\s*['\"]).*?(['\"])", r"\1********\2", message, flags=re.IGNORECASE)
+    # Enmascarar números de celular - patrones con comillas simples y dobles
+    message = re.sub(r"(['\"]celular['\"]\s*:\s*['\"])\d{6}(\d{4})(['\"])", r"\1******\2\3", message, flags=re.IGNORECASE)
+    # Enmascarar tokens JWT parcialmente
+    message = re.sub(r"(Bearer\s+)([a-zA-Z0-9_-]{10})[a-zA-Z0-9_.-]*", r"\1\2***", message, flags=re.IGNORECASE)
+    # Enmascarar emails parcialmente
+    message = re.sub(r"([a-zA-Z0-9_.+-]+)@([a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)", r"\1***@\2", message, flags=re.IGNORECASE)
     return message
 
 def log_event(level, message, status_code='-', user_id='anonymous'):
@@ -30,3 +34,26 @@ def log_event(level, message, status_code='-', user_id='anonymous'):
             f.write(log_entry)
     except Exception as e:
         print(f"CRITICAL: Failed to write to log file: {e}")
+
+def log_endpoint(action_name):
+    """Decorador que loguea automáticamente el inicio, éxito y errores de un endpoint."""
+    from functools import wraps
+    from flask import g
+    
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            user_id = getattr(g, 'user', {}).get('id', 'anonymous') if hasattr(g, 'user') else 'anonymous'
+            try:
+                log_event('INFO', f"Inicio de {action_name}", status_code='-', user_id=user_id)
+                response = f(*args, **kwargs)
+                # response puede ser (body, code) o solo body
+                status_code = response[1] if isinstance(response, tuple) else 200
+                log_event('INFO', f"Éxito de {action_name}", status_code=status_code, user_id=user_id)
+                return response
+            except Exception as e:
+                status_code = getattr(e, 'code', 500)
+                log_event('ERROR', f"Error en {action_name}: {str(e)}", status_code=status_code, user_id=user_id)
+                raise
+        return wrapper
+    return decorator

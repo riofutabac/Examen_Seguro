@@ -56,3 +56,22 @@ def token_required(f):
         
         return f(*args, **kwargs)
     return decorated
+
+def requires_role(*allowed_roles):
+    """Decorador que valida si el usuario tiene uno de los roles permitidos."""
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            from flask_restx import abort
+            
+            # El usuario debe estar autenticado primero (token_required debe ejecutarse antes)
+            if not hasattr(g, 'user') or not g.user:
+                abort(401, "Usuario no autenticado")
+            
+            role = g.user.get('role')
+            if role not in allowed_roles:
+                abort(403, f"Rol '{role}' no autorizado para esta operación. Roles permitidos: {', '.join(allowed_roles)}")
+            
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator

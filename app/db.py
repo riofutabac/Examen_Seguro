@@ -34,7 +34,7 @@ def init_db():
         role TEXT NOT NULL,
         full_name TEXT,
         email TEXT
-    ); commit;
+    );
     """)
     conn.commit()
     
@@ -44,7 +44,7 @@ def init_db():
         id SERIAL PRIMARY KEY,
         balance NUMERIC NOT NULL DEFAULT 0,
         user_id INTEGER REFERENCES bank.users(id)
-    ); commit;
+    );
     """)
     conn.commit()
     
@@ -55,7 +55,7 @@ def init_db():
         limit_credit NUMERIC NOT NULL DEFAULT 1,
         balance NUMERIC NOT NULL DEFAULT 0,
         user_id INTEGER REFERENCES bank.users(id)
-    ); commit;
+    );
     """)
     
     # Create tokens table to persist authentication tokens
@@ -64,7 +64,7 @@ def init_db():
         token TEXT PRIMARY KEY,
         user_id INTEGER REFERENCES bank.users(id),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    ); commit;
+    );
     """)
     
     # Crear tabla clients para el registro de nuevos clientes
@@ -78,7 +78,7 @@ def init_db():
         cedula TEXT UNIQUE NOT NULL,
         celular TEXT,
         ip_registro VARCHAR(45)
-    ); commit;
+    );
     """)
     
     conn.commit()
@@ -103,12 +103,12 @@ def init_db():
             # Crear una cuenta con saldo inicial 1000
             cur.execute("""
                 INSERT INTO bank.accounts (balance, user_id)
-                VALUES (%s, %s); commit;
+                VALUES (%s, %s);
             """, (1000, user_id))
             # Crear una tarjeta de crédito con límite 5000 y deuda 0
             cur.execute("""
                 INSERT INTO bank.credit_cards (limit_credit, balance, user_id)
-                VALUES (%s, %s, %s); commit;
+                VALUES (%s, %s, %s);
             """, (5000, 0, user_id))
         conn.commit()
     cur.close()

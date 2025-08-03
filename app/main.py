@@ -81,7 +81,8 @@ register_model = auth_ns.model('Register', {
     'cedula': fields.String(required=True, description='Número de cédula', example='1234567890'),
     'celular': fields.String(required=True, description='Número de celular', example='0987654321'),
     'username': fields.String(required=True, description='Nombre de usuario', example='juangarcia123'),
-    'password': fields.String(required=True, description='Contraseña', example='MiPassword123!')
+    'password': fields.String(required=True, description='Contraseña', example='MiPassword123!'),
+    'email': fields.String(required=True, description='Correo electrónico', example='juan@example.com')
 })
 
 # ---------------- Authentication Endpoints ----------------
@@ -176,14 +177,18 @@ class Register(Resource):
             # 1. Hashear contraseña
             password_hash = hash_password(data['password'])
             
-            # 2. Insertar en users
+            # 2. Construir full_name y validar email
+            full_name = f"{data['nombres']} {data['apellidos']}"
+            email = data['email']
+            
+            # 3. Insertar en users
             cur.execute(
-                "INSERT INTO bank.users (username, password, role) VALUES (%s, %s, 'cliente') RETURNING id",
-                (data['username'], password_hash)
+                "INSERT INTO bank.users (username, password, role, full_name, email) VALUES (%s, %s, 'cliente', %s, %s) RETURNING id",
+                (data['username'], password_hash, full_name, email)
             )
             user_id = cur.fetchone()[0]
             
-            # 3. Insertar en clients
+            # 4. Insertar en clients
             cur.execute(
                 """INSERT INTO bank.clients (user_id, nombres, apellidos, direccion, cedula, celular, ip_registro)
                    VALUES (%s, %s, %s, %s, %s, %s, %s)""",
@@ -191,7 +196,7 @@ class Register(Resource):
                  data['cedula'], data['celular'], ip_registro)
             )
             
-            # 4. Crear cuenta y tarjeta por defecto
+            # 5. Crear cuenta y tarjeta por defecto
             cur.execute("INSERT INTO bank.accounts (balance, user_id) VALUES (0, %s)", (user_id,))
             cur.execute("INSERT INTO bank.credit_cards (limit_credit, balance, user_id) VALUES (500, 0, %s)", (user_id,))
             
@@ -211,8 +216,8 @@ class Register(Resource):
             conn.close()
 
 # ---------------- Token-Required Decorator ----------------
-# Import the new JWT-based token_required decorator
-from .security import token_required
+# Import the new JWT-based token_required decorator and role validator
+from .security import token_required, requires_role
 
 # ---------------- Banking Operation Endpoints ----------------
 
@@ -222,16 +227,21 @@ class Deposit(Resource):
     @bank_ns.expect(deposit_model, validate=True)
     @bank_ns.doc('deposit')
     @token_required
+    @requires_role('cajero')
     def post(self):
         """
         Realiza un depósito en la cuenta especificada.
         Se requiere el número de cuenta y el monto a depositar.
         """
+        from .custom_logger import log_event
+        
         data = api.payload
         account_number = data.get("account_number")
         amount = data.get("amount", 0)
+        user_id = g.user['id']
         
         if amount <= 0:
+            log_event('WARNING', f"Intento de depósito inválido: amount={amount}", status_code=400, user_id=user_id)
             api.abort(400, "Amount must be greater than zero")
         
         conn = get_connection()
@@ -246,11 +256,13 @@ class Deposit(Resource):
             conn.rollback()
             cur.close()
             conn.close()
+            log_event('ERROR', f"Cuenta no encontrada: {account_number}", status_code=404, user_id=user_id)
             api.abort(404, "Account not found")
         new_balance = float(result[0])
         conn.commit()
         cur.close()
         conn.close()
+        log_event('INFO', f"Depósito de {amount} en cuenta {account_number}, nuevo balance: {new_balance}", status_code=200, user_id=user_id)
         return {"message": "Deposit successful", "new_balance": new_balance}, 200
 
 @bank_ns.route('/withdraw')
@@ -295,12 +307,18 @@ class Transfer(Resource):
     @token_required
     def post(self):
         """Transfiere fondos desde la cuenta del usuario autenticado a otra cuenta."""
+        from .custom_logger import log_event
+        
         data = api.payload
         target_username = data.get("target_username")
         amount = data.get("amount", 0)
+        user_id = g.user['id']
+        
         if not target_username or amount <= 0:
+            log_event('WARNING', f"Datos inválidos para transferencia: target={target_username}, amount={amount}", status_code=400, user_id=user_id)
             api.abort(400, "Invalid data")
         if target_username == g.user['username']:
+            log_event('WARNING', f"Intento de transferencia a la misma cuenta", status_code=400, user_id=user_id)
             api.abort(400, "Cannot transfer to the same account")
         conn = get_connection()
         cur = conn.cursor()
@@ -337,6 +355,7 @@ class Transfer(Resource):
             api.abort(500, f"Error during transfer: {str(e)}")
         cur.close()
         conn.close()
+        log_event('INFO', f"Transferencia de {amount} a {target_username} exitosa, nuevo balance: {new_balance}", status_code=200, user_id=user_id)
         return {"message": "Transfer successful", "new_balance": new_balance}, 200
 
 @bank_ns.route('/credit-payment')
@@ -350,11 +369,15 @@ class CreditPayment(Resource):
         - Descuenta el monto de la cuenta.
         - Aumenta la deuda de la tarjeta de crédito.
         """
+        from .custom_logger import log_event
+        
         data = api.payload
         amount = data.get("amount", 0)
-        if amount <= 0:
-            api.abort(400, "Amount must be greater than zero")
         user_id = g.user['id']
+        
+        if amount <= 0:
+            log_event('WARNING', f"Monto inválido para pago a crédito: {amount}", status_code=400, user_id=user_id)
+            api.abort(400, "Amount must be greater than zero")
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (user_id,))
@@ -383,6 +406,7 @@ class CreditPayment(Resource):
             api.abort(500, f"Error processing credit card purchase: {str(e)}")
         cur.close()
         conn.close()
+        log_event('INFO', f"Pago a crédito de {amount} exitoso, nuevo balance cuenta: {new_account_balance}, deuda tarjeta: {new_credit_balance}", status_code=200, user_id=user_id)
         return {
             "message": "Credit card purchase successful",
             "account_balance": new_account_balance,
@@ -400,11 +424,15 @@ class PayCreditBalance(Resource):
         - Descuenta el monto (o el máximo posible) de la cuenta.
         - Reduce la deuda de la tarjeta de crédito.
         """
+        from .custom_logger import log_event
+        
         data = api.payload
         amount = data.get("amount", 0)
-        if amount <= 0:
-            api.abort(400, "Amount must be greater than zero")
         user_id = g.user['id']
+        
+        if amount <= 0:
+            log_event('WARNING', f"Monto inválido para abono a tarjeta: {amount}", status_code=400, user_id=user_id)
+            api.abort(400, "Amount must be greater than zero")
         conn = get_connection()
         cur = conn.cursor()
         # Check account funds
@@ -443,11 +471,24 @@ class PayCreditBalance(Resource):
             api.abort(500, f"Error processing credit balance payment: {str(e)}")
         cur.close()
         conn.close()
+        log_event('INFO', f"Abono a tarjeta de {payment} exitoso, nuevo balance cuenta: {new_account_balance}, nueva deuda: {new_credit_debt}", status_code=200, user_id=user_id)
         return {
             "message": "Credit card debt payment successful",
             "account_balance": new_account_balance,
             "credit_card_debt": new_credit_debt
         }, 200
+
+# ---------------- Global Exception Handler ----------------
+
+@app.errorhandler(Exception)
+def handle_uncaught_exception(e):
+    """Manejador global para excepciones no capturadas."""
+    from flask import jsonify
+    from .custom_logger import log_event
+    
+    user_id = getattr(g, 'user', {}).get('id', 'anonymous') if hasattr(g, 'user') else 'anonymous'
+    log_event('ERROR', f"Excepción no manejada: {str(e)}", status_code=500, user_id=user_id)
+    return jsonify({"message": "Error interno del servidor"}), 500
 
 @app.before_first_request
 def initialize_db():
