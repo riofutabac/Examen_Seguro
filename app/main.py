@@ -33,12 +33,20 @@ app = Flask(__name__)
 
 # Configuración segura del secreto JWT
 secret_key = os.environ.get('JWT_SECRET_KEY')
+env_mode = os.environ.get('ENV', 'development').lower()
+
 if not secret_key:
-    # Solo para desarrollo - en producción debe fallar
-    import warnings
-    warnings.warn("Usando secreto por defecto. Configure JWT_SECRET_KEY en producción.", 
-                  UserWarning, stacklevel=2)
-    secret_key = 'dev-secret-change-in-production-' + str(os.urandom(16).hex())
+    if env_mode == 'production':
+        raise RuntimeError("JWT_SECRET_KEY es obligatorio en producción. "
+                          "Configure una clave segura de al menos 32 caracteres.")
+    else:
+        # Solo para desarrollo
+        import warnings
+        warnings.warn("⚠️  Usando secreto temporal para desarrollo. "
+                     "Configure JWT_SECRET_KEY para producción.", 
+                     UserWarning, stacklevel=2)
+        secret_key = 'dev-secret-temp-' + str(os.urandom(16).hex())
+
 app.config['SECRET_KEY'] = secret_key
 
 api = Api(
@@ -120,9 +128,14 @@ class Login(Resource):
             role = user_data[2]
             token = create_jwt(user_id, role, username)
             
+            if not token:
+                from .custom_logger import log_event
+                log_event('ERROR', f"Error generando token para usuario '{username}'", status_code=500, user_id=user_id)
+                api.abort(500, "Error interno generando token de autenticación")
+            
             from .custom_logger import log_event
             log_event('INFO', f"Login exitoso para usuario '{username}'", status_code=200, user_id=user_id)
-            return {"message": "Login successful", "token": token}, 200
+            return {"message": "Login exitoso", "token": token}, 200
         else:
             from .custom_logger import log_event
             log_event('WARNING', f"Intento de login fallido para usuario '{username}'", status_code=401)
@@ -234,6 +247,7 @@ class Register(Resource):
 # ---------------- Token-Required Decorator ----------------
 # Import the new JWT-based token_required decorator and role validator
 from .security import token_required, requires_role
+from .custom_logger import log_event, log_endpoint
 
 # ---------------- Banking Operation Endpoints ----------------
 
@@ -244,13 +258,12 @@ class Deposit(Resource):
     @bank_ns.doc('deposit')
     @token_required
     @requires_role('cajero')
+    @log_endpoint("Depósito")
     def post(self):
         """
         Realiza un depósito en la cuenta especificada.
         Se requiere el número de cuenta y el monto a depositar.
         """
-        from .custom_logger import log_event
-        
         data = api.payload
         account_number = data.get("account_number")
         amount = data.get("amount", 0)
@@ -258,7 +271,7 @@ class Deposit(Resource):
         
         if amount <= 0:
             log_event('WARNING', f"Intento de depósito inválido: amount={amount}", status_code=400, user_id=user_id)
-            api.abort(400, "Amount must be greater than zero")
+            api.abort(400, "El monto debe ser mayor que cero")
         
         conn = get_connection()
         cur = conn.cursor()
@@ -275,7 +288,6 @@ class Deposit(Resource):
                 api.abort(404, "Cuenta no encontrada")
             new_balance = float(result[0])
             conn.commit()
-            log_event('INFO', f"Depósito de {amount} en cuenta {account_number}, nuevo balance: {new_balance}", status_code=200, user_id=user_id)
             return {"message": "Depósito exitoso", "new_balance": new_balance}, 200
         finally:
             cur.close()
@@ -286,10 +298,9 @@ class Withdraw(Resource):
     @bank_ns.expect(withdraw_model, validate=True)
     @bank_ns.doc('withdraw')
     @token_required
+    @log_endpoint("Retiro")
     def post(self):
         """Realiza un retiro de la cuenta del usuario autenticado."""
-        from .custom_logger import log_event
-        
         data = api.payload
         amount = data.get("amount", 0)
         user_id = g.user['id']
@@ -313,7 +324,6 @@ class Withdraw(Resource):
             cur.execute("UPDATE bank.accounts SET balance = balance - %s WHERE user_id = %s RETURNING balance", (amount, user_id))
             new_balance = float(cur.fetchone()[0])
             conn.commit()
-            log_event('INFO', f"Retiro de {amount} exitoso, nuevo balance: {new_balance}", status_code=200, user_id=user_id)
             return {"message": "Retiro exitoso", "new_balance": new_balance}, 200
         finally:
             cur.close()
@@ -324,10 +334,9 @@ class Transfer(Resource):
     @bank_ns.expect(transfer_model, validate=True)
     @bank_ns.doc('transfer')
     @token_required
+    @log_endpoint("Transferencia")
     def post(self):
         """Transfiere fondos desde la cuenta del usuario autenticado a otra cuenta."""
-        from .custom_logger import log_event
-        
         data = api.payload
         target_username = data.get("target_username")
         amount = data.get("amount", 0)
@@ -335,7 +344,7 @@ class Transfer(Resource):
         
         if not target_username or amount <= 0:
             log_event('WARNING', f"Datos inválidos para transferencia: target={target_username}, amount={amount}", status_code=400, user_id=user_id)
-            api.abort(400, "Invalid data")
+            api.abort(400, "Datos inválidos")
         if target_username == g.user['username']:
             log_event('WARNING', f"Intento de transferencia a la misma cuenta", status_code=400, user_id=user_id)
             api.abort(400, "No se puede transferir a la misma cuenta")
@@ -368,7 +377,6 @@ class Transfer(Resource):
             cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (g.user['id'],))
             new_balance = float(cur.fetchone()[0])
             conn.commit()
-            log_event('INFO', f"Transferencia de {amount} a {target_username} exitosa, nuevo balance: {new_balance}", status_code=200, user_id=user_id)
             return {"message": "Transferencia exitosa", "new_balance": new_balance}, 200
         except Exception as e:
             conn.rollback()
@@ -389,8 +397,6 @@ class CreditPayment(Resource):
         - Descuenta el monto de la cuenta.
         - Aumenta la deuda de la tarjeta de crédito.
         """
-        from .custom_logger import log_event
-        
         data = api.payload
         amount = data.get("amount", 0)
         user_id = g.user['id']
@@ -444,8 +450,6 @@ class PayCreditBalance(Resource):
         - Descuenta el monto (o el máximo posible) de la cuenta.
         - Reduce la deuda de la tarjeta de crédito.
         """
-        from .custom_logger import log_event
-        
         data = api.payload
         amount = data.get("amount", 0)
         user_id = g.user['id']

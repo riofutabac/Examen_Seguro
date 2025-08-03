@@ -58,14 +58,8 @@ def init_db():
     );
     """)
     
-    # Create tokens table to persist authentication tokens
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS bank.tokens (
-        token TEXT PRIMARY KEY,
-        user_id INTEGER REFERENCES bank.users(id),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
+    # Nota: La tabla de tokens se removió porque JWT es stateless
+    # Si se necesita revocación de tokens, implementar blacklist o usar Redis
     
     # Crear tabla clients para el registro de nuevos clientes
     cur.execute("""
