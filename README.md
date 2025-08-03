@@ -39,9 +39,10 @@ Accede a la documentación interactiva en: `http://localhost:8000/swagger`
 - **Formato**: `TIMESTAMP | LEVEL | IP | USER_ID | MESSAGE | HTTP_CODE`
 
 ### ✅ Registro Seguro (TCE-07)
-- **Validaciones estrictas**: cédula, celular, username, contraseña
+- **Validaciones estrictas**: cédula, celular, username, contraseña, email único
 - **Separación de datos**: `users` / `clients`
 - **Registro de IP** y metadatos de seguridad
+- **Prevención de duplicados**: username, email y cédula únicos
 
 ## 📖 Guía de Uso
 
@@ -199,7 +200,7 @@ chmod +x test_security_features.sh
 | `401` | Token ausente/inválido | Hacer login nuevamente |
 | `403` | Rol no autorizado | Verificar permisos del usuario |
 | `404` | Recurso no encontrado | Verificar IDs/usernames |
-| `409` | Usuario/cédula duplicados | Usar datos únicos |
+| `409` | Usuario/email/cédula duplicados | Usar datos únicos |
 | `500` | Error interno | Revisar logs del servidor |
 
 ## 💳 Lógica de Tarjetas de Crédito

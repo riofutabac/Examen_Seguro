@@ -33,7 +33,7 @@ def init_db():
         password BYTEA NOT NULL,
         role TEXT NOT NULL,
         full_name TEXT,
-        email TEXT
+        email TEXT UNIQUE
     );
     """)
     conn.commit()

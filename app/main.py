@@ -203,6 +203,25 @@ class Register(Resource):
             log_event('WARNING', f"Registro fallido: contraseña débil para usuario '{data['username']}'", status_code=400, user_id='anonymous')
             api.abort(400, "La contraseña no cumple con los requisitos de seguridad.")
         
+        # Verificar que username y email no existan previamente
+        conn_check = get_connection()
+        cur_check = conn_check.cursor()
+        try:
+            # Verificar username duplicado
+            cur_check.execute("SELECT id FROM bank.users WHERE username = %s", (data['username'],))
+            if cur_check.fetchone():
+                log_event('WARNING', f"Registro fallido: username duplicado '{data['username']}'", status_code=409, user_id='anonymous')
+                api.abort(409, "El nombre de usuario ya está en uso.")
+            
+            # Verificar email duplicado
+            cur_check.execute("SELECT id FROM bank.users WHERE email = %s", (data['email'],))
+            if cur_check.fetchone():
+                log_event('WARNING', f"Registro fallido: email duplicado '{data['email']}'", status_code=409, user_id='anonymous')
+                api.abort(409, "El correo electrónico ya está registrado.")
+        finally:
+            cur_check.close()
+            conn_check.close()
+        
         # Fase de Persistencia (Transaccional)
         conn = get_connection()
         cur = conn.cursor()
@@ -241,8 +260,16 @@ class Register(Resource):
             conn.rollback()
             log_event('ERROR', f"Error en registro para {data['username']}: {e}", status_code=500)
             
-            if 'duplicate key value' in str(e).lower():
-                api.abort(409, "El nombre de usuario o la cédula ya existen.")
+            error_msg = str(e).lower()
+            if 'duplicate key value' in error_msg:
+                if 'username' in error_msg:
+                    api.abort(409, "El nombre de usuario ya está en uso.")
+                elif 'email' in error_msg:
+                    api.abort(409, "El correo electrónico ya está registrado.")
+                elif 'cedula' in error_msg:
+                    api.abort(409, "La cédula ya está registrada.")
+                else:
+                    api.abort(409, "Ya existe un registro con esos datos.")
             api.abort(500, "Ocurrió un error interno durante el registro.")
         finally:
             cur.close()
