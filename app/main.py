@@ -30,7 +30,16 @@ authorizations = {
 }
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-change-me')
+
+# Configuración segura del secreto JWT
+secret_key = os.environ.get('JWT_SECRET_KEY')
+if not secret_key:
+    # Solo para desarrollo - en producción debe fallar
+    import warnings
+    warnings.warn("Usando secreto por defecto. Configure JWT_SECRET_KEY en producción.", 
+                  UserWarning, stacklevel=2)
+    secret_key = 'dev-secret-change-in-production-' + str(os.urandom(16).hex())
+app.config['SECRET_KEY'] = secret_key
 
 api = Api(
     app,
@@ -124,19 +133,26 @@ class Logout(Resource):
     @auth_ns.doc('logout')
     def post(self):
         """Cierra la sesión del lado del cliente (debe descartar el token)."""
+        from .custom_logger import log_event
+        
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
+            log_event('WARNING', "Logout sin header válido", status_code=401, user_id='anonymous')
             api.abort(401, "Token de autorización ausente o en formato incorrecto")
         
         token = auth_header.split(" ")[1]
         try:
             import jwt
             secret_key = app.config.get('SECRET_KEY')
-            jwt.decode(token, secret_key, algorithms=['HS256'])
-            return {"message": "Logout successful. Please discard the token."}, 200
+            payload = jwt.decode(token, secret_key, algorithms=['HS256'])
+            user_id = payload.get('sub', 'unknown')
+            log_event('INFO', "Logout exitoso", status_code=200, user_id=user_id)
+            return {"message": "Logout exitoso. Por favor, descarte el token."}, 200
         except jwt.ExpiredSignatureError:
+            log_event('WARNING', "Logout con token expirado", status_code=401, user_id='unknown')
             api.abort(401, "El token ha expirado.")
         except jwt.InvalidTokenError:
+            log_event('WARNING', "Logout con token inválido", status_code=401, user_id='unknown')
             api.abort(401, "Token inválido.")
 
 @auth_ns.route('/register')
@@ -246,24 +262,24 @@ class Deposit(Resource):
         
         conn = get_connection()
         cur = conn.cursor()
-        # Update the specified account using its account number (primary key)
-        cur.execute(
-            "UPDATE bank.accounts SET balance = balance + %s WHERE id = %s RETURNING balance",
-            (amount, account_number)
-        )
-        result = cur.fetchone()
-        if not result:
-            conn.rollback()
+        try:
+            # Update the specified account using its account number (primary key)
+            cur.execute(
+                "UPDATE bank.accounts SET balance = balance + %s WHERE id = %s RETURNING balance",
+                (amount, account_number)
+            )
+            result = cur.fetchone()
+            if not result:
+                conn.rollback()
+                log_event('ERROR', f"Cuenta no encontrada: {account_number}", status_code=404, user_id=user_id)
+                api.abort(404, "Cuenta no encontrada")
+            new_balance = float(result[0])
+            conn.commit()
+            log_event('INFO', f"Depósito de {amount} en cuenta {account_number}, nuevo balance: {new_balance}", status_code=200, user_id=user_id)
+            return {"message": "Depósito exitoso", "new_balance": new_balance}, 200
+        finally:
             cur.close()
             conn.close()
-            log_event('ERROR', f"Cuenta no encontrada: {account_number}", status_code=404, user_id=user_id)
-            api.abort(404, "Account not found")
-        new_balance = float(result[0])
-        conn.commit()
-        cur.close()
-        conn.close()
-        log_event('INFO', f"Depósito de {amount} en cuenta {account_number}, nuevo balance: {new_balance}", status_code=200, user_id=user_id)
-        return {"message": "Deposit successful", "new_balance": new_balance}, 200
 
 @bank_ns.route('/withdraw')
 class Withdraw(Resource):
@@ -272,33 +288,36 @@ class Withdraw(Resource):
     @token_required
     def post(self):
         """Realiza un retiro de la cuenta del usuario autenticado."""
+        from .custom_logger import log_event
+        
         data = api.payload
         amount = data.get("amount", 0)
-        if amount <= 0:
-            api.abort(400, "Amount must be greater than zero")
         user_id = g.user['id']
+        
+        if amount <= 0:
+            log_event('WARNING', f"Intento de retiro inválido: amount={amount}", status_code=400, user_id=user_id)
+            api.abort(400, "El monto debe ser mayor que cero")
+        
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (user_id,))
-        row = cur.fetchone()
-        if not row:
+        try:
+            cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            if not row:
+                log_event('ERROR', "Cuenta del usuario no encontrada para retiro", status_code=404, user_id=user_id)
+                api.abort(404, "Cuenta no encontrada")
+            current_balance = float(row[0])
+            if current_balance < amount:
+                log_event('WARNING', f"Fondos insuficientes: balance={current_balance}, requested={amount}", status_code=400, user_id=user_id)
+                api.abort(400, "Fondos insuficientes")
+            cur.execute("UPDATE bank.accounts SET balance = balance - %s WHERE user_id = %s RETURNING balance", (amount, user_id))
+            new_balance = float(cur.fetchone()[0])
+            conn.commit()
+            log_event('INFO', f"Retiro de {amount} exitoso, nuevo balance: {new_balance}", status_code=200, user_id=user_id)
+            return {"message": "Retiro exitoso", "new_balance": new_balance}, 200
+        finally:
             cur.close()
             conn.close()
-            api.abort(404, "Account not found")
-        current_balance = float(row[0])
-        if current_balance < amount:
-            cur.close()
-            conn.close()
-            api.abort(400, "Insufficient funds")
-        cur.execute("UPDATE bank.accounts SET balance = balance - %s WHERE user_id = %s RETURNING balance", (amount, user_id))
-        new_balance = float(cur.fetchone()[0])
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        from .custom_logger import log_event
-        log_event('INFO', f"Retiro de {amount} solicitado", status_code=200, user_id=user_id)
-        return {"message": "Withdrawal successful", "new_balance": new_balance}, 200
 
 @bank_ns.route('/transfer')
 class Transfer(Resource):
@@ -319,44 +338,45 @@ class Transfer(Resource):
             api.abort(400, "Invalid data")
         if target_username == g.user['username']:
             log_event('WARNING', f"Intento de transferencia a la misma cuenta", status_code=400, user_id=user_id)
-            api.abort(400, "Cannot transfer to the same account")
+            api.abort(400, "No se puede transferir a la misma cuenta")
+        
         conn = get_connection()
         cur = conn.cursor()
-        # Check sender's balance
-        cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (g.user['id'],))
-        row = cur.fetchone()
-        if not row:
-            cur.close()
-            conn.close()
-            api.abort(404, "Sender account not found")
-        sender_balance = float(row[0])
-        if sender_balance < amount:
-            cur.close()
-            conn.close()
-            api.abort(400, "Insufficient funds")
-        # Find target user
-        cur.execute("SELECT id FROM bank.users WHERE username = %s", (target_username,))
-        target_user = cur.fetchone()
-        if not target_user:
-            cur.close()
-            conn.close()
-            api.abort(404, "Target user not found")
-        target_user_id = target_user[0]
         try:
+            # Check sender's balance
+            cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (g.user['id'],))
+            row = cur.fetchone()
+            if not row:
+                log_event('ERROR', "Cuenta del remitente no encontrada", status_code=404, user_id=user_id)
+                api.abort(404, "Cuenta del remitente no encontrada")
+            sender_balance = float(row[0])
+            if sender_balance < amount:
+                log_event('WARNING', f"Fondos insuficientes para transferencia: balance={sender_balance}, requested={amount}", status_code=400, user_id=user_id)
+                api.abort(400, "Fondos insuficientes")
+            
+            # Find target user
+            cur.execute("SELECT id FROM bank.users WHERE username = %s", (target_username,))
+            target_user = cur.fetchone()
+            if not target_user:
+                log_event('ERROR', f"Usuario destino no encontrado: {target_username}", status_code=404, user_id=user_id)
+                api.abort(404, "Usuario destino no encontrado")
+            target_user_id = target_user[0]
+            
+            # Execute transfer
             cur.execute("UPDATE bank.accounts SET balance = balance - %s WHERE user_id = %s", (amount, g.user['id']))
             cur.execute("UPDATE bank.accounts SET balance = balance + %s WHERE user_id = %s", (amount, target_user_id))
             cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (g.user['id'],))
             new_balance = float(cur.fetchone()[0])
             conn.commit()
+            log_event('INFO', f"Transferencia de {amount} a {target_username} exitosa, nuevo balance: {new_balance}", status_code=200, user_id=user_id)
+            return {"message": "Transferencia exitosa", "new_balance": new_balance}, 200
         except Exception as e:
             conn.rollback()
+            log_event('ERROR', f"Error durante transferencia: {str(e)}", status_code=500, user_id=user_id)
+            api.abort(500, f"Error durante la transferencia: {str(e)}")
+        finally:
             cur.close()
             conn.close()
-            api.abort(500, f"Error during transfer: {str(e)}")
-        cur.close()
-        conn.close()
-        log_event('INFO', f"Transferencia de {amount} a {target_username} exitosa, nuevo balance: {new_balance}", status_code=200, user_id=user_id)
-        return {"message": "Transfer successful", "new_balance": new_balance}, 200
 
 @bank_ns.route('/credit-payment')
 class CreditPayment(Resource):
@@ -377,21 +397,21 @@ class CreditPayment(Resource):
         
         if amount <= 0:
             log_event('WARNING', f"Monto inválido para pago a crédito: {amount}", status_code=400, user_id=user_id)
-            api.abort(400, "Amount must be greater than zero")
+            api.abort(400, "El monto debe ser mayor que cero")
+        
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (user_id,))
-        row = cur.fetchone()
-        if not row:
-            cur.close()
-            conn.close()
-            api.abort(404, "Account not found")
-        account_balance = float(row[0])
-        if account_balance < amount:
-            cur.close()
-            conn.close()
-            api.abort(400, "Insufficient funds in account")
         try:
+            cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            if not row:
+                log_event('ERROR', "Cuenta no encontrada para pago a crédito", status_code=404, user_id=user_id)
+                api.abort(404, "Cuenta no encontrada")
+            account_balance = float(row[0])
+            if account_balance < amount:
+                log_event('WARNING', f"Fondos insuficientes para pago a crédito: balance={account_balance}, requested={amount}", status_code=400, user_id=user_id)
+                api.abort(400, "Fondos insuficientes en la cuenta")
+            
             cur.execute("UPDATE bank.accounts SET balance = balance - %s WHERE user_id = %s", (amount, user_id))
             cur.execute("UPDATE bank.credit_cards SET balance = balance + %s WHERE user_id = %s", (amount, user_id))
             cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (user_id,))
@@ -399,19 +419,19 @@ class CreditPayment(Resource):
             cur.execute("SELECT balance FROM bank.credit_cards WHERE user_id = %s", (user_id,))
             new_credit_balance = float(cur.fetchone()[0])
             conn.commit()
+            log_event('INFO', f"Pago a crédito de {amount} exitoso, nuevo balance cuenta: {new_account_balance}, deuda tarjeta: {new_credit_balance}", status_code=200, user_id=user_id)
+            return {
+                "message": "Compra a crédito exitosa",
+                "account_balance": new_account_balance,
+                "credit_card_debt": new_credit_balance
+            }, 200
         except Exception as e:
             conn.rollback()
+            log_event('ERROR', f"Error procesando pago a crédito: {str(e)}", status_code=500, user_id=user_id)
+            api.abort(500, f"Error procesando compra a crédito: {str(e)}")
+        finally:
             cur.close()
             conn.close()
-            api.abort(500, f"Error processing credit card purchase: {str(e)}")
-        cur.close()
-        conn.close()
-        log_event('INFO', f"Pago a crédito de {amount} exitoso, nuevo balance cuenta: {new_account_balance}, deuda tarjeta: {new_credit_balance}", status_code=200, user_id=user_id)
-        return {
-            "message": "Credit card purchase successful",
-            "account_balance": new_account_balance,
-            "credit_card_debt": new_credit_balance
-        }, 200
 
 @bank_ns.route('/pay-credit-balance')
 class PayCreditBalance(Resource):
@@ -432,31 +452,31 @@ class PayCreditBalance(Resource):
         
         if amount <= 0:
             log_event('WARNING', f"Monto inválido para abono a tarjeta: {amount}", status_code=400, user_id=user_id)
-            api.abort(400, "Amount must be greater than zero")
+            api.abort(400, "El monto debe ser mayor que cero")
+        
         conn = get_connection()
         cur = conn.cursor()
-        # Check account funds
-        cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (user_id,))
-        row = cur.fetchone()
-        if not row:
-            cur.close()
-            conn.close()
-            api.abort(404, "Account not found")
-        account_balance = float(row[0])
-        if account_balance < amount:
-            cur.close()
-            conn.close()
-            api.abort(400, "Insufficient funds in account")
-        # Get current credit card debt
-        cur.execute("SELECT balance FROM bank.credit_cards WHERE user_id = %s", (user_id,))
-        row = cur.fetchone()
-        if not row:
-            cur.close()
-            conn.close()
-            api.abort(404, "Credit card not found")
-        credit_debt = float(row[0])
-        payment = min(amount, credit_debt)
         try:
+            # Check account funds
+            cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            if not row:
+                log_event('ERROR', "Cuenta no encontrada para abono a tarjeta", status_code=404, user_id=user_id)
+                api.abort(404, "Cuenta no encontrada")
+            account_balance = float(row[0])
+            if account_balance < amount:
+                log_event('WARNING', f"Fondos insuficientes para abono: balance={account_balance}, requested={amount}", status_code=400, user_id=user_id)
+                api.abort(400, "Fondos insuficientes en la cuenta")
+            
+            # Get current credit card debt
+            cur.execute("SELECT balance FROM bank.credit_cards WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            if not row:
+                log_event('ERROR', "Tarjeta de crédito no encontrada", status_code=404, user_id=user_id)
+                api.abort(404, "Tarjeta de crédito no encontrada")
+            credit_debt = float(row[0])
+            payment = min(amount, credit_debt)
+            
             cur.execute("UPDATE bank.accounts SET balance = balance - %s WHERE user_id = %s", (payment, user_id))
             cur.execute("UPDATE bank.credit_cards SET balance = balance - %s WHERE user_id = %s", (payment, user_id))
             cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (user_id,))
@@ -464,19 +484,19 @@ class PayCreditBalance(Resource):
             cur.execute("SELECT balance FROM bank.credit_cards WHERE user_id = %s", (user_id,))
             new_credit_debt = float(cur.fetchone()[0])
             conn.commit()
+            log_event('INFO', f"Abono a tarjeta de {payment} exitoso, nuevo balance cuenta: {new_account_balance}, nueva deuda: {new_credit_debt}", status_code=200, user_id=user_id)
+            return {
+                "message": "Pago de deuda de tarjeta exitoso",
+                "account_balance": new_account_balance,
+                "credit_card_debt": new_credit_debt
+            }, 200
         except Exception as e:
             conn.rollback()
+            log_event('ERROR', f"Error procesando abono a tarjeta: {str(e)}", status_code=500, user_id=user_id)
+            api.abort(500, f"Error procesando pago de deuda: {str(e)}")
+        finally:
             cur.close()
             conn.close()
-            api.abort(500, f"Error processing credit balance payment: {str(e)}")
-        cur.close()
-        conn.close()
-        log_event('INFO', f"Abono a tarjeta de {payment} exitoso, nuevo balance cuenta: {new_account_balance}, nueva deuda: {new_credit_debt}", status_code=200, user_id=user_id)
-        return {
-            "message": "Credit card debt payment successful",
-            "account_balance": new_account_balance,
-            "credit_card_debt": new_credit_debt
-        }, 200
 
 # ---------------- Global Exception Handler ----------------
 
@@ -484,9 +504,17 @@ class PayCreditBalance(Resource):
 def handle_uncaught_exception(e):
     """Manejador global para excepciones no capturadas."""
     from flask import jsonify
+    from werkzeug.exceptions import HTTPException
     from .custom_logger import log_event
     
     user_id = getattr(g, 'user', {}).get('id', 'anonymous') if hasattr(g, 'user') else 'anonymous'
+    
+    if isinstance(e, HTTPException):
+        # Loguea pero devuelve tal cual (mantiene códigos 401, 404, 400, etc.)
+        log_event('WARNING', f"HTTP error: {e.description}", status_code=e.code, user_id=user_id)
+        return e
+    
+    # No es una HTTPException: error interno real
     log_event('ERROR', f"Excepción no manejada: {str(e)}", status_code=500, user_id=user_id)
     return jsonify({"message": "Error interno del servidor"}), 500
 
