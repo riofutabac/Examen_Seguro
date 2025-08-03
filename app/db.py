@@ -82,29 +82,36 @@ def init_db():
     count = cur.fetchone()[0]
     if count == 0:
         import bcrypt
-        # Se crea únicamente un usuario cajero por defecto
-        cajero_user = ('cajero01', 'cajero_pass', 'cajero', 'Cajero Principal', 'cajero01@corebank.com')
         
-        username, password, role, full_name, email = cajero_user
+        # Obtener credenciales de cajero desde variables de entorno
+        cajero_username = os.environ.get('DEFAULT_CAJERO_USERNAME')
+        cajero_password = os.environ.get('DEFAULT_CAJERO_PASSWORD')
+        cajero_email = os.environ.get('DEFAULT_CAJERO_EMAIL')
+        cajero_fullname = os.environ.get('DEFAULT_CAJERO_FULLNAME', 'Cajero Principal')
         
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-        cur.execute("""
-            INSERT INTO bank.users (username, password, role, full_name, email)
-            VALUES (%s, %s, %s, %s, %s) RETURNING id;
-        """, (username, hashed_password, role, full_name, email))
-        user_id = cur.fetchone()[0]
-        
-        # Al cajero también se le crea una cuenta y tarjeta para mantener la consistencia
-        cur.execute("""
-            INSERT INTO bank.accounts (balance, user_id)
-            VALUES (%s, %s);
-        """, (0, user_id)) # Saldo inicial 0 para el cajero
-        
-        cur.execute("""
-            INSERT INTO bank.credit_cards (limit_credit, balance, user_id)
-            VALUES (%s, %s, %s);
-        """, (100, 0, user_id)) # Límite bajo para el cajero
-        
-        conn.commit()
+        # Solo crear cajero si se proporcionaron las credenciales
+        if cajero_username and cajero_password and cajero_email:
+            hashed_password = bcrypt.hashpw(cajero_password.encode('utf-8'), bcrypt.gensalt())
+            cur.execute("""
+                INSERT INTO bank.users (username, password, role, full_name, email)
+                VALUES (%s, %s, %s, %s, %s) RETURNING id;
+            """, (cajero_username, hashed_password, 'cajero', cajero_fullname, cajero_email))
+            user_id = cur.fetchone()[0]
+            
+            # Al cajero también se le crea una cuenta y tarjeta para mantener la consistencia
+            cur.execute("""
+                INSERT INTO bank.accounts (balance, user_id)
+                VALUES (%s, %s);
+            """, (0, user_id)) # Saldo inicial 0 para el cajero
+            
+            cur.execute("""
+                INSERT INTO bank.credit_cards (limit_credit, balance, user_id)
+                VALUES (%s, %s, %s);
+            """, (100, 0, user_id)) # Límite bajo para el cajero
+            
+            conn.commit()
+            print(f"✅ Cajero creado exitosamente: {cajero_username}")
+        else:
+            print("⚠️  No se creó cajero por defecto. Configure DEFAULT_CAJERO_USERNAME, DEFAULT_CAJERO_PASSWORD y DEFAULT_CAJERO_EMAIL")
     cur.close()
     conn.close()

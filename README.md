@@ -11,14 +11,22 @@ Sistema bancario con autenticación JWT, control de roles, logging de seguridad 
 ### Levantar el Sistema
 
 ```bash
-# 1. Configurar variables de entorno
-export JWT_SECRET_KEY=$(openssl rand -hex 32)  # Obligatorio para producción
-export ENV=development  # o 'production'
+# 1. Copiar archivo de configuración
+cp .env.example .env
 
-# 2. Levantar con Docker
+# 2. Editar .env con tus valores (especialmente JWT_SECRET_KEY y credenciales de cajero)
+nano .env
+
+# 3. O configurar variables de entorno directamente
+export JWT_SECRET_KEY=$(openssl rand -hex 32)
+export DEFAULT_CAJERO_USERNAME=cajero_admin
+export DEFAULT_CAJERO_PASSWORD=CajeroSecure123!
+export DEFAULT_CAJERO_EMAIL=cajero@corebank.com
+
+# 4. Levantar con Docker
 docker-compose up --build
 
-# 3. La API estará disponible en http://localhost:8000
+# 5. La API estará disponible en http://localhost:8000
 ```
 
 ### Swagger UI
@@ -157,7 +165,13 @@ El sistema automáticamente enmascara:
 # Obligatorio para producción
 JWT_SECRET_KEY=your-super-secure-key-32-chars-min
 
-# Opcional
+# Credenciales del cajero por defecto (obligatorias)
+DEFAULT_CAJERO_USERNAME=cajero_admin
+DEFAULT_CAJERO_PASSWORD=CajeroSecure123!
+DEFAULT_CAJERO_EMAIL=cajero@corebank.com
+DEFAULT_CAJERO_FULLNAME=Cajero Administrador
+
+# Configuración de entorno (opcional)
 ENV=production  # development | production
 POSTGRES_HOST=db
 POSTGRES_PORT=5432
@@ -280,6 +294,7 @@ Para problemas comunes:
 2. **Conexión DB**: Verificar docker-compose up
 3. **Logs no generan**: Verificar permisos de escritura
 4. **Errores 500**: Revisar `docker-compose logs app`
+5. **No se crea cajero**: Verificar variables DEFAULT_CAJERO_* en .env
 
 ### Revocación de Tokens
 
