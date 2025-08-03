@@ -86,6 +86,12 @@ curl -X POST http://localhost:8000/bank/withdraw \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN_HERE" \
   -d '{"amount": 100}'
+
+# Ejemplo: Compra a crédito
+curl -X POST http://localhost:8000/bank/credit-payment \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -d '{"amount": 50}'
 ```
 
 ## 🎯 Endpoints Disponibles
@@ -99,8 +105,8 @@ curl -X POST http://localhost:8000/bank/withdraw \
 - `POST /bank/deposit` - Depósito (solo `cajero`)
 - `POST /bank/withdraw` - Retiro
 - `POST /bank/transfer` - Transferencia
-- `POST /bank/credit-payment` - Compra a crédito
-- `POST /bank/pay-credit-balance` - Abono a tarjeta
+- `POST /bank/credit-payment` - Compra a crédito (aumenta deuda, verifica límite)
+- `POST /bank/pay-credit-balance` - Abono a tarjeta (paga deuda desde cuenta)
 
 ## 🛡️ Control de Roles
 
@@ -195,6 +201,19 @@ chmod +x test_security_features.sh
 | `404` | Recurso no encontrado | Verificar IDs/usernames |
 | `409` | Usuario/cédula duplicados | Usar datos únicos |
 | `500` | Error interno | Revisar logs del servidor |
+
+## 💳 Lógica de Tarjetas de Crédito
+
+### Compra a Crédito (`/credit-payment`)
+1. **Verifica límite disponible**: `límite_crédito - deuda_actual >= monto_compra`
+2. **Solo aumenta la deuda**: NO descuenta de la cuenta de ahorros
+3. **Retorna**: nueva deuda y crédito disponible
+
+### Pago de Deuda (`/pay-credit-balance`)
+1. **Verifica fondos** en cuenta de ahorros
+2. **Descuenta de la cuenta** de ahorros
+3. **Reduce la deuda** de la tarjeta de crédito
+4. **Cálculo inteligente**: paga máximo entre monto solicitado y deuda actual
 
 ## 📝 Validaciones de Registro
 

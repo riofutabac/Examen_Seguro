@@ -231,7 +231,7 @@ class Register(Resource):
             
             # 5. Crear cuenta y tarjeta por defecto
             cur.execute("INSERT INTO bank.accounts (balance, user_id) VALUES (0, %s)", (user_id,))
-            cur.execute("INSERT INTO bank.credit_cards (limit_credit, balance, user_id) VALUES (500, 0, %s)", (user_id,))
+            cur.execute("INSERT INTO bank.credit_cards (limit_credit, balance, user_id) VALUES (1000, 0, %s)", (user_id,))
             
             conn.commit()
             log_event('INFO', f"Nuevo cliente registrado exitosamente: {data['username']}", status_code=201, user_id=user_id)
@@ -399,41 +399,47 @@ class CreditPayment(Resource):
     def post(self):
         """
         Realiza una compra a crédito:
-        - Descuenta el monto de la cuenta.
+        - Verifica que no se exceda el límite de crédito disponible.
         - Aumenta la deuda de la tarjeta de crédito.
+        - NO descuenta de la cuenta de ahorros (esa sería doble cobro).
         """
         data = api.payload
         amount = data.get("amount", 0)
         user_id = g.user['id']
         
         if amount <= 0:
-            log_event('WARNING', f"Monto inválido para pago a crédito: {amount}", status_code=400, user_id=user_id)
+            log_event('WARNING', f"Monto inválido para compra a crédito: {amount}", status_code=400, user_id=user_id)
             api.abort(400, "El monto debe ser mayor que cero")
         
         conn = get_connection()
         cur = conn.cursor()
         try:
-            cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (user_id,))
+            # Verificar que la tarjeta de crédito exista y obtener límite y deuda actual
+            cur.execute("SELECT limit_credit, balance FROM bank.credit_cards WHERE user_id = %s", (user_id,))
             row = cur.fetchone()
             if not row:
-                log_event('ERROR', "Cuenta no encontrada para pago a crédito", status_code=404, user_id=user_id)
-                api.abort(404, "Cuenta no encontrada")
-            account_balance = float(row[0])
-            if account_balance < amount:
-                log_event('WARNING', f"Fondos insuficientes para pago a crédito: balance={account_balance}, requested={amount}", status_code=400, user_id=user_id)
-                api.abort(400, "Fondos insuficientes en la cuenta")
+                log_event('ERROR', "Tarjeta de crédito no encontrada", status_code=404, user_id=user_id)
+                api.abort(404, "Tarjeta de crédito no encontrada")
             
-            cur.execute("UPDATE bank.accounts SET balance = balance - %s WHERE user_id = %s", (amount, user_id))
-            cur.execute("UPDATE bank.credit_cards SET balance = balance + %s WHERE user_id = %s", (amount, user_id))
-            cur.execute("SELECT balance FROM bank.accounts WHERE user_id = %s", (user_id,))
-            new_account_balance = float(cur.fetchone()[0])
-            cur.execute("SELECT balance FROM bank.credit_cards WHERE user_id = %s", (user_id,))
+            limit_credit = float(row[0])
+            current_debt = float(row[1])
+            available_credit = limit_credit - current_debt
+            
+            if amount > available_credit:
+                log_event('WARNING', f"Límite de crédito excedido: available={available_credit}, requested={amount}", status_code=400, user_id=user_id)
+                api.abort(400, f"Límite de crédito insuficiente. Disponible: {available_credit}")
+            
+            # Solo aumentar la deuda de la tarjeta (NO tocar la cuenta de ahorros)
+            cur.execute("UPDATE bank.credit_cards SET balance = balance + %s WHERE user_id = %s RETURNING balance", (amount, user_id))
             new_credit_balance = float(cur.fetchone()[0])
+            new_available_credit = limit_credit - new_credit_balance
+            
             conn.commit()
             return {
                 "message": "Compra a crédito exitosa",
-                "account_balance": new_account_balance,
-                "credit_card_debt": new_credit_balance
+                "amount_charged": amount,
+                "credit_card_debt": new_credit_balance,
+                "available_credit": new_available_credit
             }, 200
         except Exception as e:
             conn.rollback()

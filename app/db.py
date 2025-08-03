@@ -82,28 +82,29 @@ def init_db():
     count = cur.fetchone()[0]
     if count == 0:
         import bcrypt
-        sample_users = [
-            ('user1', 'pass1', 'cliente', 'Usuario Uno', 'user1@example.com'),
-            ('user2', 'pass2', 'cliente', 'Usuario Dos', 'user2@example.com'),
-            ('user3', 'pass3', 'cajero',  'Usuario Tres', 'user3@example.com')
-        ]
-        for username, password, role, full_name, email in sample_users:
-            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-            cur.execute("""
-                INSERT INTO bank.users (username, password, role, full_name, email)
-                VALUES (%s, %s, %s, %s, %s) RETURNING id;
-            """, (username, hashed_password, role, full_name, email))
-            user_id = cur.fetchone()[0]
-            # Crear una cuenta con saldo inicial 1000
-            cur.execute("""
-                INSERT INTO bank.accounts (balance, user_id)
-                VALUES (%s, %s);
-            """, (1000, user_id))
-            # Crear una tarjeta de crédito con límite 5000 y deuda 0
-            cur.execute("""
-                INSERT INTO bank.credit_cards (limit_credit, balance, user_id)
-                VALUES (%s, %s, %s);
-            """, (5000, 0, user_id))
+        # Se crea únicamente un usuario cajero por defecto
+        cajero_user = ('cajero01', 'cajero_pass', 'cajero', 'Cajero Principal', 'cajero01@corebank.com')
+        
+        username, password, role, full_name, email = cajero_user
+        
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        cur.execute("""
+            INSERT INTO bank.users (username, password, role, full_name, email)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id;
+        """, (username, hashed_password, role, full_name, email))
+        user_id = cur.fetchone()[0]
+        
+        # Al cajero también se le crea una cuenta y tarjeta para mantener la consistencia
+        cur.execute("""
+            INSERT INTO bank.accounts (balance, user_id)
+            VALUES (%s, %s);
+        """, (0, user_id)) # Saldo inicial 0 para el cajero
+        
+        cur.execute("""
+            INSERT INTO bank.credit_cards (limit_credit, balance, user_id)
+            VALUES (%s, %s, %s);
+        """, (100, 0, user_id)) # Límite bajo para el cajero
+        
         conn.commit()
     cur.close()
     conn.close()
