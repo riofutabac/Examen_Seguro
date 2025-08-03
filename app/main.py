@@ -183,12 +183,15 @@ class Register(Resource):
         
         # Fase de Validación
         if not validar_cedula(data['cedula']):
+            log_event('WARNING', f"Registro fallido: cédula inválida {data['cedula']}", status_code=400, user_id='anonymous')
             api.abort(400, "El número de cédula proporcionado no es válido.")
         
         if not validar_celular(data['celular']):
+            log_event('WARNING', f"Registro fallido: celular inválido {data['celular']}", status_code=400, user_id='anonymous')
             api.abort(400, "El número de celular debe tener 10 dígitos y empezar con 09.")
         
         if not validar_username(data['username'], data['nombres'], data['apellidos']):
+            log_event('WARNING', f"Registro fallido: username inválido '{data['username']}'", status_code=400, user_id='anonymous')
             api.abort(400, "El nombre de usuario es inválido o contiene información personal.")
         
         info_personal_para_pass = {
@@ -197,6 +200,7 @@ class Register(Resource):
             'cedula': data['cedula']
         }
         if not validar_password(data['password'], info_personal_para_pass):
+            log_event('WARNING', f"Registro fallido: contraseña débil para usuario '{data['username']}'", status_code=400, user_id='anonymous')
             api.abort(400, "La contraseña no cumple con los requisitos de seguridad.")
         
         # Fase de Persistencia (Transaccional)
@@ -391,6 +395,7 @@ class CreditPayment(Resource):
     @bank_ns.expect(credit_payment_model, validate=True)
     @bank_ns.doc('credit_payment')
     @token_required
+    @log_endpoint("Pago a crédito")
     def post(self):
         """
         Realiza una compra a crédito:
@@ -425,7 +430,6 @@ class CreditPayment(Resource):
             cur.execute("SELECT balance FROM bank.credit_cards WHERE user_id = %s", (user_id,))
             new_credit_balance = float(cur.fetchone()[0])
             conn.commit()
-            log_event('INFO', f"Pago a crédito de {amount} exitoso, nuevo balance cuenta: {new_account_balance}, deuda tarjeta: {new_credit_balance}", status_code=200, user_id=user_id)
             return {
                 "message": "Compra a crédito exitosa",
                 "account_balance": new_account_balance,
@@ -444,6 +448,7 @@ class PayCreditBalance(Resource):
     @bank_ns.expect(pay_credit_balance_model, validate=True)
     @bank_ns.doc('pay_credit_balance')
     @token_required
+    @log_endpoint("Abono tarjeta")
     def post(self):
         """
         Realiza un abono a la deuda de la tarjeta:
@@ -488,7 +493,6 @@ class PayCreditBalance(Resource):
             cur.execute("SELECT balance FROM bank.credit_cards WHERE user_id = %s", (user_id,))
             new_credit_debt = float(cur.fetchone()[0])
             conn.commit()
-            log_event('INFO', f"Abono a tarjeta de {payment} exitoso, nuevo balance cuenta: {new_account_balance}, nueva deuda: {new_credit_debt}", status_code=200, user_id=user_id)
             return {
                 "message": "Pago de deuda de tarjeta exitoso",
                 "account_balance": new_account_balance,

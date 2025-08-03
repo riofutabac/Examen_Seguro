@@ -30,6 +30,7 @@ Accede a la documentación interactiva en: `http://localhost:8000/swagger`
 - **JWT stateless** con expiración de 2 horas
 - **Validación de roles**: `cliente`, `cajero`
 - **Decoradores de seguridad**: `@token_required`, `@requires_role()`
+- **Logout cliente-side**: No hay blacklist persistente; el token se descarta del cliente
 
 ### ✅ Logging de Seguridad (TCG-02)
 - **Sistema propio** sin librerías externas
@@ -92,7 +93,7 @@ curl -X POST http://localhost:8000/bank/withdraw \
 ### Autenticación
 - `POST /auth/register` - Registro de cliente
 - `POST /auth/login` - Inicio de sesión  
-- `POST /auth/logout` - Cerrar sesión
+- `POST /auth/logout` - Cerrar sesión (stateless - descarte del token en cliente)
 
 ### Operaciones Bancarias (Requieren Token)
 - `POST /bank/deposit` - Depósito (solo `cajero`)
@@ -259,6 +260,15 @@ Para problemas comunes:
 2. **Conexión DB**: Verificar docker-compose up
 3. **Logs no generan**: Verificar permisos de escritura
 4. **Errores 500**: Revisar `docker-compose logs app`
+
+### Revocación de Tokens
+
+El sistema actual implementa **logout stateless**: el token sigue siendo válido hasta su expiración (2 horas), pero el cliente debe descartarlo.
+
+**Para implementar revocación real en el futuro:**
+- Agregar tabla `token_blacklist` o usar Redis
+- Modificar `@token_required` para verificar blacklist
+- Añadir token a blacklist en `/logout`
 
 ---
 
