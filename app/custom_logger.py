@@ -27,7 +27,7 @@ def log_event(level, message, status_code='-', user_id='anonymous'):
     try:
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
         ip_address = request.remote_addr if request else 'N/A'
-        safe_message = _mask_sensitive_data(str(message))
+        safe_message = _mask_sensitive_data(str(message)).replace('\n', ' ').replace('\r', '').replace('\t', ' ')
         log_entry = f"{timestamp} | {level.upper():<7} | {ip_address:<15} | {user_id:<15} | {safe_message} | HTTP {status_code}\n"
         
         with open(LOG_FILE, 'a', encoding='utf-8') as f:

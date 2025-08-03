@@ -385,7 +385,7 @@ class Transfer(Resource):
         except Exception as e:
             conn.rollback()
             log_event('ERROR', f"Error durante transferencia: {str(e)}", status_code=500, user_id=user_id)
-            api.abort(500, f"Error durante la transferencia: {str(e)}")
+            api.abort(500, "Ocurrió un error interno durante la transferencia")
         finally:
             cur.close()
             conn.close()
@@ -438,7 +438,7 @@ class CreditPayment(Resource):
         except Exception as e:
             conn.rollback()
             log_event('ERROR', f"Error procesando pago a crédito: {str(e)}", status_code=500, user_id=user_id)
-            api.abort(500, f"Error procesando compra a crédito: {str(e)}")
+            api.abort(500, "Ocurrió un error interno procesando la compra a crédito")
         finally:
             cur.close()
             conn.close()
@@ -501,7 +501,7 @@ class PayCreditBalance(Resource):
         except Exception as e:
             conn.rollback()
             log_event('ERROR', f"Error procesando abono a tarjeta: {str(e)}", status_code=500, user_id=user_id)
-            api.abort(500, f"Error procesando pago de deuda: {str(e)}")
+            api.abort(500, "Ocurrió un error interno procesando el pago de deuda")
         finally:
             cur.close()
             conn.close()
